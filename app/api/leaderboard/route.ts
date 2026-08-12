@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import mysql from 'mysql2/promise';
+import { db } from '@/lib/db';
 
 const dbPool = mysql.createPool({
   host: 'localhost',
@@ -13,7 +14,7 @@ const dbPool = mysql.createPool({
 
 async function ensureTableExists() {
   try {
-    await dbPool.query(`
+    await db.query(`
       CREATE TABLE IF NOT EXISTS leaderboard (
         id INT AUTO_INCREMENT PRIMARY KEY,
         player_name VARCHAR(100) NOT NULL,
@@ -25,9 +26,9 @@ async function ensureTableExists() {
     `);
 
     // Tambah kolom avatar jika belum ada di tabel lama
-    const [cols]: any = await dbPool.query(`SHOW COLUMNS FROM leaderboard LIKE 'avatar'`);
+    const [cols]: any = await db.query(`SHOW COLUMNS FROM leaderboard LIKE 'avatar'`);
     if (cols.length === 0) {
-      await dbPool.query(`ALTER TABLE leaderboard ADD COLUMN avatar VARCHAR(20) DEFAULT '🤖' AFTER player_name`);
+      await db.query(`ALTER TABLE leaderboard ADD COLUMN avatar VARCHAR(20) DEFAULT '🤖' AFTER player_name`);
     }
   } catch (err) {
     console.error('Error saat memastikan tabel:', err);
@@ -37,7 +38,7 @@ async function ensureTableExists() {
 export async function GET() {
   try {
     await ensureTableExists();
-    const [rows]: any = await dbPool.query(
+    const [rows]: any = await db.query(
       'SELECT player_name, avatar, game_mode, score FROM leaderboard ORDER BY score DESC'
     );
     return NextResponse.json(rows || []);
@@ -59,20 +60,20 @@ export async function POST(req: Request) {
     const playerAvatar = avatar || '🤖';
     const numericScore = Number(score) || 0;
 
-    const [existing]: any = await dbPool.query(
+    const [existing]: any = await db.query(
       'SELECT id, score FROM leaderboard WHERE LOWER(player_name) = LOWER(?) AND game_mode = ?',
       [cleanName, gameMode]
     );
 
     if (existing && existing.length > 0) {
       if (numericScore > existing[0].score) {
-        await dbPool.query(
+        await db.query(
           'UPDATE leaderboard SET score = ?, avatar = ? WHERE id = ?',
           [numericScore, playerAvatar, existing[0].id]
         );
       }
     } else {
-      await dbPool.query(
+      await db.query(
         'INSERT INTO leaderboard (player_name, avatar, game_mode, score) VALUES (?, ?, ?, ?)',
         [cleanName, playerAvatar, gameMode, numericScore]
       );
