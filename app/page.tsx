@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { GAME_1_PROMPT_LEVELS, GAME_2_PPT_LEVELS, LevelData, Option } from '@/data/gameData';
+import { GAME_1_PROMPT_LEVELS, GAME_2_PPT_LEVELS, LevelData, Option, DifficultyLevel } from '@/data/gameData';
 
 type GameMode = 'GAME_1_PROMPT' | 'GAME_2_PPT';
 type GameState = 'LOGIN' | 'MAIN_MENU' | 'RULES' | 'MATERIAL' | 'PLAYING' | 'FEEDBACK' | 'PLAYGROUND' | 'FINISHED';
@@ -13,6 +13,31 @@ interface LeaderboardItem {
   game_mode: string;
   score: number;
   created_at?: string;
+}
+
+interface DbQuestion {
+  id: number;
+  game_type: string;
+  title: string;
+  material?: string;
+  scenario: string;
+  option_a: string;
+  option_b: string;
+  option_c: string;
+  correct_option: string;
+  explanation?: string;
+  image_url?: string;
+  default_prompt_to_test?: string;
+  timer_seconds?: number;
+}
+
+interface AnswerHistoryDetail {
+  questionTitle: string;
+  scenario: string;
+  selectedText: string;
+  correctText: string;
+  isCorrect: boolean;
+  explanation: string;
 }
 
 // 🎲 ALGORITMA FISHER-YATES SHUFFLE
@@ -33,6 +58,7 @@ export default function Home() {
 
   const [playerName, setPlayerName] = useState('');
   const [gameMode, setGameMode] = useState<GameMode>('GAME_1_PROMPT');
+  const [selectedDifficulty, setSelectedDifficulty] = useState<DifficultyLevel>('EASY');
 
   const [activeLevels, setActiveLevels] = useState<LevelData[]>([]);
   const [currentLevelIdx, setCurrentLevelIdx] = useState(0);
@@ -40,9 +66,13 @@ export default function Home() {
   const [sessionScore, setSessionScore] = useState(0);
   const [userScores, setUserScores] = useState<number[]>([]);
 
+  const [sessionAnswers, setSessionAnswers] = useState<AnswerHistoryDetail[]>([]);
+
   const [timeLeft, setTimeLeft] = useState(0);
   const [selectedOption, setSelectedOption] = useState<Option | null>(null);
   const [leaderboardData, setLeaderboardData] = useState<LeaderboardItem[]>([]);
+
+  const [dbQuestions, setDbQuestions] = useState<DbQuestion[]>([]);
 
   // Playground state
   const [playgroundPrompt, setPlaygroundPrompt] = useState('');
@@ -51,7 +81,6 @@ export default function Home() {
 
   const currentLevel: LevelData | undefined = activeLevels[currentLevelIdx];
 
-  // Fetch Leaderboard dari Database Laragon
   const fetchLeaderboard = async () => {
     try {
       const res = await fetch('/api/leaderboard');
@@ -60,25 +89,36 @@ export default function Home() {
         if (Array.isArray(data)) {
           setLeaderboardData(data);
         }
-      } else {
-        console.error('Gagal fetch leaderboard, status:', res.status);
       }
     } catch (err) {
       console.error('Gagal mengambil leaderboard:', err);
     }
   };
 
+  const fetchDbQuestions = async () => {
+    try {
+      const res = await fetch('/api/questions');
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data)) {
+          setDbQuestions(data);
+        }
+      }
+    } catch (err) {
+      console.error('Gagal mengambil soal dari database:', err);
+    }
+  };
+
   useEffect(() => {
     fetchLeaderboard();
+    fetchDbQuestions();
   }, []);
 
-  // Hitung Skor Sesi Pengerjaan Soal Saat Ini
   useEffect(() => {
     const sum = userScores.reduce((acc, curr) => acc + (curr || 0), 0);
     setSessionScore(sum);
   }, [userScores]);
 
-  // 🧮 LOGIKA TAB "SEMUA GAME": PENJUMLAHAN SKOR TERTINGGI GAME 1 + GAME 2 PER PEMAIN
   const getCombinedLeaderboard = (): LeaderboardItem[] => {
     const playerMap: { [name: string]: { game1: number; game2: number } } = {};
 
@@ -109,15 +149,12 @@ export default function Home() {
     return combinedList.sort((a, b) => b.score - a.score);
   };
 
-  // 📊 HITUNG STATS PLAYER PER GAME DARI DATABASE
   const getPlayerStats = () => {
     if (!playerName) {
       return { scoreGame1: 0, scoreGame2: 0, totalCombined: 0, rankGame1: '-', rankGame2: '-', overallRank: '-', completedChallenges: 0, history: [] };
     }
 
     const nameLower = playerName.trim().toLowerCase();
-
-    // Filter history milik user
     const playerHistory = leaderboardData.filter(item => item.player_name.trim().toLowerCase() === nameLower);
 
     const game1List = leaderboardData
@@ -140,7 +177,6 @@ export default function Home() {
     const combinedLeaderboard = getCombinedLeaderboard();
     const overallRankIdx = combinedLeaderboard.findIndex(item => item.player_name.trim().toLowerCase() === nameLower);
 
-    // Hitung berapa game unik yang sudah pernah dimainkan
     let completedCount = 0;
     if (playerGame1Entry) completedCount++;
     if (playerGame2Entry) completedCount++;
@@ -169,11 +205,11 @@ export default function Home() {
     ? sessionScore
     : playerStats.totalCombined;
 
-  // 🔄 RESET PLAYER TOTAL
   const handleResetAndChangePlayer = () => {
     setPlayerName('');
     setSessionScore(0);
     setUserScores([]);
+    setSessionAnswers([]);
     setCurrentLevelIdx(0);
     setActiveLevels([]);
     setSelectedOption(null);
@@ -194,7 +230,6 @@ export default function Home() {
     return getCombinedLeaderboard();
   };
 
-  // Timer logic
   useEffect(() => {
     let timer: NodeJS.Timeout;
     if (gameState === 'PLAYING' && timeLeft > 0) {
@@ -211,7 +246,9 @@ export default function Home() {
     if (!playerName.trim()) return alert('Masukkan Username Anda!');
     setSessionScore(0);
     setUserScores([]);
+    setSessionAnswers([]);
     await fetchLeaderboard();
+    await fetchDbQuestions();
     setGameState('MAIN_MENU');
   };
 
@@ -220,33 +257,32 @@ export default function Home() {
     setGameState('RULES');
   };
 
-  // ⏱️ PENGATURAN TIMER KONSISTEN PER GAME MODE
   const handleStartGameFromRules = () => {
-    const rawPool = gameMode === 'GAME_1_PROMPT' ? GAME_1_PROMPT_LEVELS : GAME_2_PPT_LEVELS;
-    const shuffledLevels = shuffleArray(rawPool);
+    const defaultPool = gameMode === 'GAME_1_PROMPT' ? GAME_1_PROMPT_LEVELS : GAME_2_PPT_LEVELS;
 
-    // Game 1 = 25 Detik, Game 2 = 20 Detik secara seragam untuk seluruh soal
-    const fixedTimerSeconds = gameMode === 'GAME_1_PROMPT' ? 25 : 20;
+    const filteredByDifficulty = defaultPool.filter((q) => q.difficulty === selectedDifficulty);
 
-    const preparedLevels = shuffledLevels.map((level, idx) => {
-      const randomizedOptions = shuffleArray(level.options).map((opt, optIdx) => ({
-        ...opt,
-        id: String.fromCharCode(65 + optIdx)
-      }));
+    const poolToUse = filteredByDifficulty.length > 0 ? filteredByDifficulty : defaultPool;
 
-      const cleanTitle = level.title.replace(/^Level \d+:\s*/i, '');
-
-      return {
-        ...level,
-        title: `Soal ${idx + 1}: ${cleanTitle}`,
-        timerSeconds: fixedTimerSeconds,
-        options: randomizedOptions
-      };
-    });
+    // Acak urutan soal, potong hanya 5 soal (.slice(0, 5)), dan atur ulang penomorannya
+    const preparedLevels = shuffleArray(poolToUse)
+      .slice(0, 5)
+      .map((level, idx) => {
+        const cleanTitle = level.title.replace(/^Soal \d+:\s*|^Level \d+:\s*|^Materi \d+:\s*/i, '');
+        return {
+          ...level,
+          title: `Soal ${idx + 1}: ${cleanTitle}`,
+          options: shuffleArray(level.options).map((opt, optIdx) => ({
+            ...opt,
+            id: String.fromCharCode(65 + optIdx),
+          })),
+        };
+      });
 
     setActiveLevels(preparedLevels);
     setCurrentLevelIdx(0);
     setUserScores(new Array(preparedLevels.length).fill(0));
+    setSessionAnswers([]);
     setGameState('MATERIAL');
   };
 
@@ -260,10 +296,33 @@ export default function Home() {
   const handleAnswer = (option: Option | null) => {
     setSelectedOption(option);
 
+    let basePoints = 100;
+    if (selectedDifficulty === 'MEDIUM') basePoints = 150;
+    if (selectedDifficulty === 'HARD') basePoints = 200;
+
     let pointsEarned = 0;
+    const correctOpt = currentLevel?.options.find(o => o.isCorrect);
+
     if (option && option.isCorrect) {
       const bonusSpeed = timeLeft * 5;
-      pointsEarned = 100 + bonusSpeed;
+      pointsEarned = basePoints + bonusSpeed;
+    }
+
+    if (currentLevel) {
+      const answerDetail: AnswerHistoryDetail = {
+        questionTitle: currentLevel.title,
+        scenario: currentLevel.scenario,
+        selectedText: option ? option.text : 'Waktu Habis (Tidak Menjawab)',
+        correctText: correctOpt ? correctOpt.text : '-',
+        isCorrect: option ? option.isCorrect : false,
+        explanation: currentLevel.explanation
+      };
+
+      setSessionAnswers(prev => {
+        const updated = [...prev];
+        updated[currentLevelIdx] = answerDetail;
+        return updated;
+      });
     }
 
     setUserScores((prev) => {
@@ -302,9 +361,10 @@ export default function Home() {
       setGameState('MATERIAL');
     } else {
       try {
-        const targetMode = gameMode === 'GAME_1_PROMPT' ? 'AI Prompt Master' : 'AI Mastery Quiz';
+        const targetMode = gameMode === 'GAME_1_PROMPT' 
+          ? `AI Prompt Master (${selectedDifficulty})` 
+          : `AI Mastery Quiz (${selectedDifficulty})`;
 
-        // Simpan skor ke DB Laragon
         const res = await fetch('/api/leaderboard', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -319,7 +379,6 @@ export default function Home() {
           console.error('Gagal simpan skor, HTTP status:', res.status);
         }
 
-        // Ambil data terbaru langsung setelah simpan
         await fetchLeaderboard();
       } catch (err) {
         console.error('Gagal menyimpan skor:', err);
@@ -328,7 +387,6 @@ export default function Home() {
     }
   };
 
-  // Dynamic Option Card Styles (Support Light & Dark Mode)
   const getOptionStyles = (idx: number) => {
     const styles = [
       {
@@ -355,13 +413,14 @@ export default function Home() {
 
   const filteredLeaderboard = getFilteredLeaderboard();
 
-  // Helper untuk rendering Ikon Medali Top 1, 2, 3
   const getRankBadge = (idx: number) => {
     if (idx === 0) return <span className="text-xl">🥇</span>;
     if (idx === 1) return <span className="text-xl">🥈</span>;
     if (idx === 2) return <span className="text-xl">🥉</span>;
     return <span className="opacity-60 text-sm font-bold">#{idx + 1}</span>;
   };
+
+  const wrongAnswers = sessionAnswers.filter(ans => !ans.isCorrect);
 
   const themeBg = isDarkMode ? 'bg-[#0f172a] text-white' : 'bg-slate-100 text-slate-900';
   const cardBg = isDarkMode ? 'bg-[#1e293b] border-slate-700' : 'bg-white border-slate-300 shadow-2xl';
@@ -504,35 +563,64 @@ export default function Home() {
                             ? `Welcome back, ${playerName} 👋`
                             : `Welcome, ${playerName} 👋`}
                         </h2>
-                        <p className="text-xs md:text-sm opacity-75">Pilih tantangan di bawah ini untuk memulai game (Total 10 Soal di tiap Game):</p>
+                        <p className="text-xs md:text-sm opacity-75">Siap Mengasah Kemampuanmu?, Pilih tantangan di bawah ini untuk memulai game:</p>
                       </div>
 
+                      {/* GAME CHOICE CARDS DENGAN BUTTON MULAI BERMAIN */}
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pt-2">
-                        <button
+                        
+                        {/* GAME 1 CARD */}
+                        <div
                           onClick={() => handleSelectGame('GAME_1_PROMPT')}
-                          className="p-6 md:p-8 rounded-3xl bg-gradient-to-br from-indigo-600 via-indigo-700 to-blue-800 text-white text-left transition shadow-2xl hover:scale-[1.02] flex flex-col justify-between border border-indigo-400/20"
+                          className="group relative overflow-hidden p-6 md:p-8 rounded-3xl bg-gradient-to-br from-indigo-600 via-indigo-700 to-blue-800 text-white text-left transition-all duration-300 shadow-2xl hover:scale-[1.02] hover:shadow-indigo-500/30 flex flex-col justify-between border border-indigo-400/30 cursor-pointer min-h-[220px]"
                         >
-                          <div>
-                            <span className="text-4xl block mb-2">🎯</span>
-                            <h3 className="font-extrabold text-xl">Game 1: AI Prompt Master</h3>
+                          <div className="space-y-3">
+                            <span className="text-4xl block">🎯</span>
+                            <div>
+                              <h3 className="font-extrabold text-xl tracking-wide">Game 1: AI Prompt Master</h3>
+                              <p className="text-xs md:text-sm text-indigo-100 opacity-90 leading-relaxed mt-1">
+                                Menebak Prompt yang Menghasilkan Teks & Gambar yang ditampilkan
+                              </p>
+                            </div>
                           </div>
-                          <p className="text-xs md:text-sm text-indigo-100 opacity-90 leading-relaxed mt-4">
-                            Menebak Prompt yang Menghasilkan Teks & Gambar yang ditampilkan
-                          </p>
-                        </button>
 
-                        <button
-                          onClick={() => handleSelectGame('GAME_2_PPT')}
-                          className="p-6 md:p-8 rounded-3xl bg-gradient-to-br from-purple-600 via-purple-700 to-pink-800 text-white text-left transition shadow-2xl hover:scale-[1.02] flex flex-col justify-between border border-purple-400/20"
-                        >
-                          <div>
-                            <span className="text-4xl block mb-2">📊</span>
-                            <h3 className="font-extrabold text-xl">Game 2: AI Mastery Quiz</h3>
+                          {/* BUTTON MULAI BERMAIN */}
+                          <div className="pt-6">
+                            <button
+                              type="button"
+                              className="w-full py-3 px-4 rounded-2xl bg-white text-indigo-950 font-black text-xs uppercase tracking-wider flex items-center justify-center gap-2 shadow-lg group-hover:bg-cyan-300 group-hover:scale-[1.02] active:scale-95 transition-all duration-200"
+                            >
+                              <span>▶</span> Mulai Bermain
+                            </button>
                           </div>
-                          <p className="text-xs md:text-sm text-purple-100 opacity-90 leading-relaxed mt-4">
-                            Memahami Materi Mengenai AI yang Dipadu Dengan Soal Berbentuk Quiz
-                          </p>
-                        </button>
+                        </div>
+
+                        {/* GAME 2 CARD */}
+                        <div
+                          onClick={() => handleSelectGame('GAME_2_PPT')}
+                          className="group relative overflow-hidden p-6 md:p-8 rounded-3xl bg-gradient-to-br from-purple-600 via-purple-700 to-pink-800 text-white text-left transition-all duration-300 shadow-2xl hover:scale-[1.02] hover:shadow-purple-500/30 flex flex-col justify-between border border-purple-400/30 cursor-pointer min-h-[220px]"
+                        >
+                          <div className="space-y-3">
+                            <span className="text-4xl block">📊</span>
+                            <div>
+                              <h3 className="font-extrabold text-xl tracking-wide">Game 2: AI Mastery Quiz</h3>
+                              <p className="text-xs md:text-sm text-purple-100 opacity-90 leading-relaxed mt-1">
+                                Memahami Materi Mengenai AI yang Dipadu Dengan Soal Berbentuk Quiz
+                              </p>
+                            </div>
+                          </div>
+
+                          {/* BUTTON MULAI BERMAIN */}
+                          <div className="pt-6">
+                            <button
+                              type="button"
+                              className="w-full py-3 px-4 rounded-2xl bg-white text-purple-950 font-black text-xs uppercase tracking-wider flex items-center justify-center gap-2 shadow-lg group-hover:bg-pink-300 group-hover:scale-[1.02] active:scale-95 transition-all duration-200"
+                            >
+                              <span>▶</span> Mulai Quiz
+                            </button>
+                          </div>
+                        </div>
+
                       </div>
                     </div>
                   )}
@@ -736,18 +824,59 @@ export default function Home() {
             {/* GAMEPLAY STATES */}
             <div className="p-6 md:p-8 flex-1 flex flex-col justify-center">
 
-              {/* RULES STATE */}
+              {/* RULES STATE & SELEKSI DIFFICULTY */}
               {gameState === 'RULES' && (
-                <div className="space-y-6 my-auto">
-                  <div className="text-center space-y-1">
-                    <h2 className="text-xl font-bold text-sky-400">📜 Aturan Permainan</h2>
+                <div className="space-y-6 my-auto text-center">
+                  <div className="space-y-1">
+                    <h2 className="text-xl font-bold text-sky-400">📜 Pilih Tingkat Kesulitan</h2>
+                    <p className="text-xs opacity-75">Sesuaikan tantangan dengan kemampuan Anda:</p>
                   </div>
 
-                  <div className={`p-6 rounded-2xl border text-sm space-y-3 ${isDarkMode ? 'bg-slate-900/60 border-slate-700' : 'bg-slate-50 border-slate-200'}`}>
-                    <p>⚡ Semakin cepat menjawab benar, semakin banyak bonus poin yang diperoleh!</p>
-                    <p>⏱️ Memiliki batas waktu yang dimana Game 1 berdurasi <strong>25 detik</strong>, sedangkan Game 2 berdurasi <strong>20 detik</strong>.</p>
-                    <p>🎲 Memiliki 10 soal yang selalu diacak ketika dimainkan ulang</p>
-                    <p>↩️ Dapat kembali ke soal sebelumnya jika ragu dengan jawaban sebelumnya</p>
+                  {/* KARTU SELEKSI DIFFICULTY */}
+                  <div className="grid grid-cols-3 gap-3">
+                    <button
+                      onClick={() => setSelectedDifficulty('EASY')}
+                      className={`p-4 rounded-2xl border font-bold transition flex flex-col items-center gap-1 ${
+                        selectedDifficulty === 'EASY'
+                          ? 'bg-emerald-500/20 border-emerald-400 text-emerald-400 shadow-lg scale-105'
+                          : 'bg-slate-800/40 border-slate-700 text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      <span className="text-2xl">🟢</span>
+                      <span className="text-sm">Easy</span>
+                      <span className="text-[10px] opacity-70">30s | Basic (+100)</span>
+                    </button>
+
+                    <button
+                      onClick={() => setSelectedDifficulty('MEDIUM')}
+                      className={`p-4 rounded-2xl border font-bold transition flex flex-col items-center gap-1 ${
+                        selectedDifficulty === 'MEDIUM'
+                          ? 'bg-amber-500/20 border-amber-400 text-amber-400 shadow-lg scale-105'
+                          : 'bg-slate-800/40 border-slate-700 text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      <span className="text-2xl">🟡</span>
+                      <span className="text-sm">Medium</span>
+                      <span className="text-[10px] opacity-70">20s | Case (+150)</span>
+                    </button>
+
+                    <button
+                      onClick={() => setSelectedDifficulty('HARD')}
+                      className={`p-4 rounded-2xl border font-bold transition flex flex-col items-center gap-1 ${
+                        selectedDifficulty === 'HARD'
+                          ? 'bg-rose-500/20 border-rose-400 text-rose-400 shadow-lg scale-105'
+                          : 'bg-slate-800/40 border-slate-700 text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      <span className="text-2xl">🔴</span>
+                      <span className="text-sm">Hard</span>
+                      <span className="text-[10px] opacity-70">15s | Expert (+200)</span>
+                    </button>
+                  </div>
+
+                  <div className={`p-4 rounded-2xl border text-xs text-left space-y-2 ${isDarkMode ? 'bg-slate-900/60 border-slate-700' : 'bg-slate-50 border-slate-200'}`}>
+                    <p>⚡ Semakin tinggi tingkat kesulitan, semakin besar poin dasar yang diperoleh!</p>
+                    <p>⏱️ Sisa waktu pengerjaan memberikan poin bonus tambahan.</p>
                   </div>
 
                   <div className="flex gap-3 pt-2">
@@ -761,7 +890,7 @@ export default function Home() {
                       onClick={handleStartGameFromRules}
                       className="flex-1 py-4 bg-sky-600 hover:bg-sky-500 text-white font-bold rounded-2xl transition text-base shadow-xl"
                     >
-                      Saya Siap, Mulai Tantangan! 🚀
+                      Mulai Mode {selectedDifficulty} 🚀
                     </button>
                   </div>
                 </div>
@@ -772,9 +901,20 @@ export default function Home() {
                 <div className="space-y-6 my-auto">
                   <div className={`flex justify-between items-center border-b pb-3 ${isDarkMode ? 'border-slate-700/50' : 'border-slate-200'}`}>
                     <span className="text-sky-400 font-bold text-base">{currentLevel.title}</span>
-                    <span className={`text-sm font-semibold ${isDarkMode ? 'opacity-75' : 'text-slate-600'}`}>
-                      Soal {currentLevelIdx + 1} / {activeLevels.length}
-                    </span>
+                    <div className="flex items-center gap-2">
+                      <span className={`text-xs px-2.5 py-1 rounded-lg font-bold border ${
+                        currentLevel.difficulty === 'EASY' 
+                          ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30' 
+                          : currentLevel.difficulty === 'MEDIUM' 
+                          ? 'bg-amber-500/20 text-amber-400 border-amber-500/30' 
+                          : 'bg-rose-500/20 text-rose-400 border-rose-500/30'
+                      }`}>
+                        {currentLevel.difficulty}
+                      </span>
+                      <span className={`text-sm font-semibold ${isDarkMode ? 'opacity-75' : 'text-slate-600'}`}>
+                        Soal {currentLevelIdx + 1} / {activeLevels.length}
+                      </span>
+                    </div>
                   </div>
 
                   <div className={`p-6 rounded-2xl border ${isDarkMode ? 'bg-sky-950/40 border-sky-800' : 'bg-sky-50 border-sky-200'}`}>
@@ -940,16 +1080,71 @@ export default function Home() {
                 </div>
               )}
 
-              {/* FINISHED STATE */}
+              {/* 🏆 FINISHED STATE (HANYA MENAMPILKAN SOAL YANG SALAH) */}
               {gameState === 'FINISHED' && (
-                <div className="text-center space-y-6 my-auto">
-                  <span className="text-6xl block animate-bounce">🏆</span>
+                <div className="text-center space-y-5 my-auto max-w-2xl mx-auto py-2">
+                  <span className="text-5xl block animate-bounce">🏆</span>
                   <h2 className="text-2xl font-black text-sky-400">Selamat, {playerName}!</h2>
 
-                  <div className={`p-6 rounded-2xl border max-w-sm mx-auto ${isDarkMode ? 'bg-slate-900 border-slate-700' : 'bg-slate-100 border-slate-200'}`}>
-                    <span className="text-xs opacity-75 uppercase font-semibold">Total Skor Sekarang</span>
-                    <p className="text-4xl font-extrabold text-emerald-500 mt-2">{sessionScore} pts</p>
-                    <p className="text-xs opacity-60 mt-2">Otomatis Masuk ke dalam leaderboard</p>
+                  {/* KARTU RINGKASAN SKOR */}
+                  <div className={`p-5 rounded-2xl border max-w-md mx-auto ${isDarkMode ? 'bg-slate-900/90 border-slate-700' : 'bg-slate-100 border-slate-300 shadow-md'}`}>
+                    <span className="text-xs opacity-75 uppercase font-bold tracking-wider">Total Skor Mode {selectedDifficulty}</span>
+                    <p className="text-4xl font-black text-emerald-400 mt-1 font-mono">{sessionScore} pts</p>
+                    <p className="text-[11px] opacity-60 mt-1">Otomatis Masuk ke dalam leaderboard</p>
+                  </div>
+
+                  {/* KOTAK EVALUASI: HANYA MENAMPILKAN JAWABAN SALAH */}
+                  <div className="space-y-3 text-left pt-2">
+                    <div className="flex justify-between items-center border-b border-slate-700/60 pb-2">
+                      <h3 className="font-bold text-xs md:text-sm text-rose-400 uppercase tracking-wider flex items-center gap-1.5">
+                        <span>❌</span> Evaluasi Jawaban Salah Sesi Ini
+                      </h3>
+                      <span className="text-[11px] font-bold opacity-70">
+                        Salah: {wrongAnswers.length} / {sessionAnswers.length} Soal
+                      </span>
+                    </div>
+
+                    {wrongAnswers.length === 0 ? (
+                      <div className={`p-4 rounded-2xl border text-center ${isDarkMode ? 'bg-emerald-950/20 border-emerald-800/40 text-emerald-300' : 'bg-emerald-50 border-emerald-200 text-emerald-800'}`}>
+                        <p className="font-bold text-sm">🎉 Luar biasa! Kamu menjawab SEMUA soal dengan sempurna tanpa kesalahan!</p>
+                      </div>
+                    ) : (
+                      <div className="space-y-3 max-h-[250px] overflow-y-auto pr-1">
+                        {wrongAnswers.map((ans, idx) => (
+                          <div
+                            key={idx}
+                            className={`p-3.5 rounded-2xl border text-xs space-y-1.5 transition ${
+                              isDarkMode ? 'bg-rose-950/30 border-rose-800/50' : 'bg-rose-50 border-rose-200'
+                            }`}
+                          >
+                            <div className="flex justify-between items-start gap-2">
+                              <span className="font-bold text-slate-200 text-xs">
+                                ❌ {ans.questionTitle}
+                              </span>
+                              <span className="px-2 py-0.5 rounded text-[10px] font-extrabold shrink-0 bg-rose-500/20 text-rose-400 border border-rose-500/30">
+                                SALAH
+                              </span>
+                            </div>
+
+                            <p className="text-[11px] opacity-90 leading-snug font-medium text-slate-300">
+                              {ans.scenario}
+                            </p>
+
+                            <div className="pt-1 space-y-1 border-t border-slate-700/40 text-[11px]">
+                              <p>
+                                Jawaban Anda: <strong className="text-rose-400 font-bold">{ans.selectedText}</strong>
+                              </p>
+                              <p className="text-emerald-400 font-bold">
+                                Jawaban Benar: {ans.correctText}
+                              </p>
+                              <p className="text-slate-400 italic text-[10px] pt-0.5">
+                                💡 {ans.explanation}
+                              </p>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
 
                   <button
@@ -958,7 +1153,7 @@ export default function Home() {
                       setActiveTab('LEADERBOARD');
                       setGameState('MAIN_MENU');
                     }}
-                    className="w-full max-w-sm py-4 bg-sky-600 hover:bg-sky-500 text-white font-bold rounded-2xl transition text-sm shadow-xl"
+                    className="w-full max-w-md py-3.5 bg-sky-600 hover:bg-sky-500 text-white font-extrabold rounded-2xl transition text-sm shadow-xl"
                   >
                     Kembali ke Halaman Utama ➔
                   </button>

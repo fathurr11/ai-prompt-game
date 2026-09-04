@@ -1,86 +1,58 @@
 import { NextResponse } from 'next/server';
-import mysql from 'mysql2/promise';
-import { db } from '@/lib/db';
+import { db } from '@/lib/db'; // Path koneksi database TiDB Cloud / MySQL Anda
 
-const dbPool = mysql.createPool({
-  host: 'localhost',
-  user: 'root',
-  password: '',
-  database: 'minigame_ai',
-  waitForConnections: true,
-  connectionLimit: 10,
-  queueLimit: 0,
-});
-
-async function ensureTableExists() {
-  try {
-    await db.query(`
-      CREATE TABLE IF NOT EXISTS leaderboard (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        player_name VARCHAR(100) NOT NULL,
-        avatar VARCHAR(20) DEFAULT '🤖',
-        game_mode VARCHAR(100) NOT NULL,
-        score INT NOT NULL,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-    `);
-
-    // Tambah kolom avatar jika belum ada di tabel lama
-    const [cols]: any = await db.query(`SHOW COLUMNS FROM leaderboard LIKE 'avatar'`);
-    if (cols.length === 0) {
-      await db.query(`ALTER TABLE leaderboard ADD COLUMN avatar VARCHAR(20) DEFAULT '🤖' AFTER player_name`);
-    }
-  } catch (err) {
-    console.error('Error saat memastikan tabel:', err);
-  }
-}
-
+// 1. GET: Mengambil seluruh riwayat leaderboard diurutkan dari yang TERBARU
 export async function GET() {
   try {
-    await ensureTableExists();
-    const [rows]: any = await db.query(
-      'SELECT player_name, avatar, game_mode, score FROM leaderboard ORDER BY score DESC'
+    const [rows] = await db.query(
+      'SELECT id, player_name, game_mode, score, created_at FROM leaderboard ORDER BY id DESC'
     );
-    return NextResponse.json(rows || []);
-  } catch (error: any) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json(rows);
+  } catch (error) {
+    console.error('Error GET leaderboard:', error);
+    return NextResponse.json({ error: 'Gagal mengambil data leaderboard' }, { status: 500 });
   }
 }
 
+// 2. POST: Menyimpan riwayat bermain baru sebagai log sesi (INSERT)
 export async function POST(req: Request) {
   try {
-    await ensureTableExists();
-    const { playerName, avatar, gameMode, score } = await req.json();
+    const body = await req.json();
+    const { playerName, gameMode, score } = body;
 
     if (!playerName || !gameMode) {
-      return NextResponse.json({ error: 'Data tidak lengkap' }, { status: 400 });
-    }
-
-    const cleanName = playerName.trim();
-    const playerAvatar = avatar || '🤖';
-    const numericScore = Number(score) || 0;
-
-    const [existing]: any = await db.query(
-      'SELECT id, score FROM leaderboard WHERE LOWER(player_name) = LOWER(?) AND game_mode = ?',
-      [cleanName, gameMode]
-    );
-
-    if (existing && existing.length > 0) {
-      if (numericScore > existing[0].score) {
-        await db.query(
-          'UPDATE leaderboard SET score = ?, avatar = ? WHERE id = ?',
-          [numericScore, playerAvatar, existing[0].id]
-        );
-      }
-    } else {
-      await db.query(
-        'INSERT INTO leaderboard (player_name, avatar, game_mode, score) VALUES (?, ?, ?, ?)',
-        [cleanName, playerAvatar, gameMode, numericScore]
+      return NextResponse.json(
+        { error: 'Nama player dan mode game wajib diisi' },
+        { status: 400 }
       );
     }
 
-    return NextResponse.json({ success: true });
-  } catch (error: any) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    // Selalu simpan sebagai baris riwayat baru (INSERT)
+    const [result] = await db.query(
+      'INSERT INTO leaderboard (player_name, game_mode, score, created_at) VALUES (?, ?, ?, NOW())',
+      [playerName.trim(), gameMode, score]
+    );
+
+    return NextResponse.json({
+      message: 'Skor dan riwayat sesi berhasil dicatat!',
+      result
+    });
+  } catch (error) {
+    console.error('Error POST leaderboard:', error);
+    return NextResponse.json({ error: 'Gagal menyimpan skor ke database' }, { status: 500 });
+  }
+}
+
+// 3. DELETE: Menghapus seluruh riwayat data leaderboard (Reset Leaderboard)
+export async function DELETE() {
+  try {
+    await db.query('DELETE FROM leaderboard');
+    
+    return NextResponse.json({
+      message: 'Seluruh riwayat leaderboard berhasil di-reset!'
+    });
+  } catch (error) {
+    console.error('Error DELETE leaderboard:', error);
+    return NextResponse.json({ error: 'Gagal menghapus data leaderboard' }, { status: 500 });
   }
 }
